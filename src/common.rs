@@ -1,0 +1,175 @@
+pub async fn download_site(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let response = reqwest::get(url).await?;
+    let content = response.text().await?;
+
+    Ok(content)
+}
+
+pub fn extract_definition_json(content: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("<script id=\"__NEXT_DATA__\" type=\"application\\/json\">(.*)<\\/script>")?;
+    if let Some(caps) = re.captures(content) {
+        Ok(caps[1].to_string())
+    } else {
+        Err("Definition JSON not found".into())
+    }
+}
+
+pub fn is_movie(content: &str) -> bool {
+    let re = regex::Regex::new("\"showType\":\"movie\"").unwrap();
+    re.is_match(content)
+}
+
+pub fn extract_title(json: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"title\":\"([^\"]*)\"")?;
+    if let Some(caps) = re.captures(json) {
+        Ok(caps[1].to_string())
+    } else {
+        Err("Title not found".into())
+    }
+}
+
+pub fn extract_idec(json: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"idec\":\"([^\"]*)\"")?;
+    if let Some(caps) = re.captures(json) {
+        Ok(caps[1].to_string())
+    } else {
+        Err("IDEC not found".into())
+    }
+}
+
+pub fn extract_year(json: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"year\":\"(\\d+)\"")?;
+    if let Some(caps) = re.captures(json) {
+        Ok(caps[1].to_string())
+    } else {
+        Err("Year not found".into())
+    }
+}
+
+pub fn get_playlist_url(idec: &str) -> String {
+    format!("https://api.ceskatelevize.cz/video/v1/playlist-vod/v1/stream-data/media/external/{}?canPlayDrm=true", idec)
+}
+
+pub fn extract_stream_url(json: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"forceSubtitles\":\\w+,\"url\":\"([^\"]*)\"")?;
+    if let Some(caps) = re.captures(json) {
+        Ok(caps[1].to_string())
+    } else {
+        Err("Stream URL not found".into())
+    }
+}
+
+pub fn extract_subtitle_url(json: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"url\":\"(.*)\",\"format\":\"vtt\"")?;
+    if let Some(caps) = re.captures(json) {
+        Ok(caps[1].to_string())
+    } else {
+        Err("Subtitle URL not found".into())
+    }
+}
+
+pub fn sanitize_filename(filename: &str) -> String {
+    let re = regex::Regex::new("[<>:\"/\\|?*]").unwrap();
+    re.replace_all(filename, "_").to_string()
+}
+
+pub fn get_output_filename(title: &str, year: &str) -> String {
+    let sanitized_title = sanitize_filename(title);
+    format!("{} ({}).mp4", sanitized_title, year)
+}
+
+pub fn get_subtitle_filename(title: &str, year: &str) -> String {
+    let sanitized_title = sanitize_filename(title);
+    format!("{} ({}).vtt", sanitized_title, year)
+}
+
+pub async fn download_subtitle(url: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let response = reqwest::get(url).await?;
+    let content = response.text().await?;
+
+    std::fs::write(filename, content)?;
+
+    Ok(())
+}
+
+pub async fn download_playlist(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let response = reqwest::get(url).await?;
+    let content = response.text().await?;
+
+    Ok(content)
+}
+
+pub async fn download_manifest(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let response = reqwest::get(url).await?;
+    let content = response.text().await?;
+
+    Ok(content)
+}
+
+pub fn extract_video_qualities(manifest: &str) -> Vec<i32> {
+    let re = regex::Regex::new("<Representation id=\"[\\d-]+\" codecs=\"[\\w\\d\\.]+\" width=\"\\d+\" height=\"(\\d+)\" sar=\"[\\d:]+\" bandwidth=\"\\d+\"\\/>").unwrap();
+    re.captures_iter(manifest)
+        .map(|caps| caps[1].parse::<i32>().unwrap_or(0))
+        .collect()
+}
+
+pub fn extract_audio_languages(manifest: &str) -> Vec<String> {
+    let re = regex::Regex::new("<AdaptationSet .* lang=\"(\\w+)\" >").unwrap();
+    re.captures_iter(manifest)
+        .map(|caps| caps[1].to_string())
+        .collect()
+}
+
+pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: Vec<String>) -> Vec<String> {
+    let mut args: Vec<String> = vec![];
+
+    let video_quality_count = video_qualities.len();
+
+    args.push("-map".into());
+    args.push(format!("0:{}", video_quality_count - 1));
+
+    for i in 0..languages.len() {
+        args.push("-map".into());
+        args.push(format!("0:{}", video_quality_count + i));
+    }
+
+    args
+}
+
+pub fn create_ffmpeg_arguments(stream_url: &str, mapping_args: Vec<String>, output_filename: &str) -> Vec<String> {
+    let mut args: Vec<String> = vec![];
+
+    args.push("-headers".into());
+    args.push("Referer: https://player.ceskatelevize.cz".into());
+    args.push("-user_agent".into());
+    args.push("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into());
+    args.push("-re".into());
+    args.push("-timeout".into());
+    args.push("3".into());
+    args.push("-reconnect".into());
+    args.push("1".into());
+    args.push("-reconnect_at_eof".into());
+    args.push("1".into());
+    args.push("-reconnect_delay_max".into());
+    args.push("2".into());
+    args.push("-i".into());
+    args.push(format!("{}", stream_url));
+    args.extend(mapping_args);
+    args.push(format!("{}", output_filename));
+
+    args
+}
+
+pub fn run_command(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Arguments: {:?}", args);
+
+    let status = std::process::Command::new("ffmpeg")
+        .args(&args)
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("Command failed with status: {}", status).into());
+    }
+
+    Ok(())
+}
