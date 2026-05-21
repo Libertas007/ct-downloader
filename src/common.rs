@@ -73,14 +73,26 @@ pub fn sanitize_filename(filename: &str) -> String {
     re.replace_all(filename, "_").to_string()
 }
 
-pub fn get_output_filename(title: &str, year: &str) -> String {
+pub fn format_title_year(title: &str, year: &str) -> String {
     let sanitized_title = sanitize_filename(title);
-    format!("{} ({}).mp4", sanitized_title, year)
+    format!("{} ({})", sanitized_title, year)
 }
 
-pub fn get_subtitle_filename(title: &str, year: &str) -> String {
-    let sanitized_title = sanitize_filename(title);
-    format!("{} ({}).vtt", sanitized_title, year)
+pub fn format_episode(show_title: &str, season_title: &str, episode_title: &str) -> String {
+    let sanitized_show_title = sanitize_filename(show_title);
+    let sanitized_season_title = sanitize_filename(season_title);
+    let sanitized_episode_title = sanitize_filename(episode_title);
+    format!("{} - {} - {}", sanitized_show_title, sanitized_season_title, sanitized_episode_title)
+}
+
+pub fn get_output_filename(name: &str) -> String {
+    let sanitized_name = sanitize_filename(name);
+    format!("{}.mp4", sanitized_name)
+}
+
+pub fn get_subtitle_filename(name: &str) -> String {
+    let sanitized_name = sanitize_filename(name);
+    format!("{}.vtt", sanitized_name)
 }
 
 pub async fn download_subtitle(url: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {

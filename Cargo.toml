@@ -7,3 +7,4 @@ edition = "2024"
 regex = "1.12.3"
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
