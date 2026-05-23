@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use crate::common;
 use crate::movie::download_with_idec;
 
@@ -34,6 +36,7 @@ pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn 
     }
 
     println!("Type an episode number to download, or 'q' to quit:");
+    println!("You can also use this format: '1,2,3' to download multiple episodes at once.");
 
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).unwrap();
@@ -44,20 +47,46 @@ pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn 
         return Ok(());
     }
 
-    let episode_number: usize = match input.parse() {
-        Ok(num) => num,
-        Err(_) => {
-            println!("Invalid input. Exiting.");
+    let episode_numbers: Vec<usize> = input.split(',')
+        .map(|s| s.trim().parse::<usize>())
+        .filter_map(Result::ok)
+        .collect();
+
+    if episode_numbers.is_empty() {
+        let episode_number: usize = match input.parse() {
+            Ok(num) => num,
+            Err(_) => {
+                println!("Invalid input. Exiting.");
+                return Ok(());
+            }
+        };
+
+
+        if episode_number == 0 || episode_number > episodes.len() {
+            println!("Episode number out of range. Exiting.");
             return Ok(());
         }
-    };
-
-    if episode_number == 0 || episode_number > episodes.len() {
-        println!("Episode number out of range. Exiting.");
-        return Ok(());
+    
+        let episode = &episodes[episode_number - 1];
+        return download_episode(episode).await;
     }
 
-    let episode = &episodes[episode_number - 1];
+    for episode_number in episode_numbers {
+        if episode_number == 0 || episode_number > episodes.len() {
+            println!("Episode number {} out of range. Skipping.", episode_number);
+            continue;
+        }
+    
+        let episode = &episodes[episode_number - 1];
+        if let Err(e) = download_episode(episode).await {
+            println!("Failed to download episode {}: {}", episode_number, e);
+        }
+    }
+
+    Ok(())
+}
+
+async fn download_episode(episode: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let episode_idec = episode["id"].as_str().unwrap_or("");
 
     let episode_title = episode["title"].as_str().unwrap_or("");
@@ -67,7 +96,7 @@ pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn 
     let name = common::format_episode(show_title, season_title, episode_title);
     
     println!("Downloading episode '{} - {}: {}'.", show_title, season_title, episode_title);
-
+    
     return download_with_idec(&episode_idec.to_string(), &name).await;
 }
 

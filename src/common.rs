@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+use std::process::Stdio;
+use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
 pub async fn download_site(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let response = reqwest::get(url).await?;
     let content = response.text().await?;
@@ -59,13 +64,12 @@ pub fn extract_stream_url(json: &str) -> Result<String, Box<dyn std::error::Erro
     }
 }
 
-pub fn extract_subtitle_url(json: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let re = regex::Regex::new("\"url\":\"(.*)\",\"format\":\"vtt\"")?;
-    if let Some(caps) = re.captures(json) {
-        Ok(caps[1].to_string())
-    } else {
-        Err("Subtitle URL not found".into())
-    }
+pub fn extract_subtitle_urls(json: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"language\":\"(\\w+)\".*?\"url\":\"([^\"]*)\",\"format\":\"vtt\"")?;
+    let urls = re.captures_iter(json)
+        .map(|caps| (caps[1].to_string(), caps[2].to_string()))
+        .collect();
+    Ok(urls)
 }
 
 pub fn sanitize_filename(filename: &str) -> String {
@@ -148,14 +152,23 @@ pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: Vec<String
     args
 }
 
-pub fn create_ffmpeg_arguments(stream_url: &str, mapping_args: Vec<String>, output_filename: &str) -> Vec<String> {
+pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>, mapping_arguments: Vec<String>, output_filename: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![];
 
     args.push("-headers".into());
     args.push("Referer: https://player.ceskatelevize.cz".into());
     args.push("-user_agent".into());
     args.push("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into());
-    args.push("-re".into());
+    args.push("-y".into());
+    args.push("-hide_banner".into());
+    args.push("-readrate".into());
+    args.push("2".into());
+    args.push("-max_interleave_delta".into());
+    args.push("100000".into());
+    args.push("-avoid_negative_ts".into());
+    args.push("make_zero".into());
+    args.push("-fflags".into());
+    args.push("+genpts+igndts".into());
     args.push("-timeout".into());
     args.push("3".into());
     args.push("-reconnect".into());
@@ -166,22 +179,63 @@ pub fn create_ffmpeg_arguments(stream_url: &str, mapping_args: Vec<String>, outp
     args.push("2".into());
     args.push("-i".into());
     args.push(format!("{}", stream_url));
-    args.extend(mapping_args);
+    args.extend(subtitle_arguments);
+    args.extend(mapping_arguments);
     args.push(format!("{}", output_filename));
 
     args
 }
 
-pub fn run_command(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn create_subtitle_arguments(subtitle_files: &HashMap<String, String>) -> Vec<String> {
+    let mut args: Vec<String> = vec![];
+
+    let mut index = 1;
+
+    for (language, filename) in subtitle_files {
+        args.push("-i".into());
+        args.push(filename.into());
+        args.push("-map".into());
+        args.push(format!("{}:0", index));
+        args.push(format!("-metadata:s:s:{}", index - 1));
+        args.push(format!("language={}", language));
+
+        index += 1;
+    }
+    
+    args.push("-c:s".into());
+    args.push("mov_text".into());
+
+    args
+}
+
+pub async fn run_command(args: Vec<String>, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Arguments: {:?}", args);
 
-    let status = std::process::Command::new("ffmpeg")
-        .args(&args)
-        .status()?;
+    let mut child = Command::new("ffmpeg")
+        .args(args)
+       /*  .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped()) */
+        .spawn()
+        .expect("Failed to start command");
 
+    /* let stderr = child.stderr.take().expect("No stderr");
+    let mut reader = BufReader::new(stderr).lines();
+
+    let name = name.to_string();
+    
+    tokio::spawn(async move {
+        while let Some(line) = reader.next_line().await.unwrap() {
+            if line.contains("time") || line.contains("error") {
+                println!("{}: {}", name, line);
+            }
+        }
+    }); */
+
+    /* let status = child.wait().await?;
     if !status.success() {
         return Err(format!("Command failed with status: {}", status).into());
-    }
+    } */
 
     Ok(())
 }

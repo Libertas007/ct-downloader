@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::common;
 
 pub async fn download_movie(url: &String, json: &String) -> Result<(), Box<dyn std::error::Error>> {
@@ -18,10 +20,16 @@ pub async fn download_with_idec(idec: &String, name: &String) -> Result<(), Box<
 
     let stream_url = common::extract_stream_url(&playlist)?;
 
-    if let Ok(subtitle_url) = common::extract_subtitle_url(&playlist) {
-        let subtitle_filename = common::get_subtitle_filename(&name);
-        println!("Downloading subtitles to '{}'.", subtitle_filename);
-        common::download_subtitle(&subtitle_url, &subtitle_filename).await?;
+    let mut subtitle_files = HashMap::<String, String>::new();
+
+    if let Ok(subtitle_urls) = common::extract_subtitle_urls(&playlist) {
+        for (language, subtitle_url) in subtitle_urls {
+            let subtitle_filename = common::get_subtitle_filename(&format!("{} - {}", &name, language));
+            println!("Downloading subtitles to '{}'.", subtitle_filename);
+            common::download_subtitle(&subtitle_url, &subtitle_filename).await?;
+
+            subtitle_files.insert(language, subtitle_filename);
+        }
         println!("Subtitles downloaded.");
     } else {
         println!("No subtitles found.");
@@ -38,9 +46,9 @@ pub async fn download_with_idec(idec: &String, name: &String) -> Result<(), Box<
     println!("Available audio languages: {:?}", languages);
 
     let mapping_arguments = common::create_mapping_arguments(video_qualities, languages);
+    let subtitle_arguments = common::create_subtitle_arguments(&subtitle_files);
 
-    let args = common::create_ffmpeg_arguments(&stream_url, mapping_arguments, &output_filename);
+    let args = common::create_ffmpeg_arguments(&stream_url, subtitle_arguments, mapping_arguments, &output_filename);
 
-    common::run_command(args)?;
-    Ok(())
+    common::run_command(args, &name).await
 }
