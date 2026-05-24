@@ -5,6 +5,11 @@ mod movie;
 mod series;
 
 fn main() {
+    if !test_ffmpeg() {
+        eprintln!("ffmpeg is not installed or not found in PATH. Please install ffmpeg to use this program.");
+        std::process::exit(1);
+    }
+
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <URL>", args[0]);
@@ -14,7 +19,7 @@ fn main() {
     println!("Downloading from {}.", url);
 
     match tokio::runtime::Runtime::new().unwrap().block_on(run(url)) {
-        Ok(_) => println!("Done!"),
+        Ok(_) => println!("Program finished!"),
         Err(e) => eprintln!("Error: {}", e),
     }
 }
@@ -34,3 +39,9 @@ async fn run(url: &String) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn test_ffmpeg() -> bool {
+    match std::process::Command::new("ffmpeg").arg("-version").output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}

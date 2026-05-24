@@ -1,5 +1,8 @@
+use std::clone;
 use std::collections::HashMap;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::process::Stdio;
+use anyhow::Result;
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -64,12 +67,22 @@ pub fn extract_stream_url(json: &str) -> Result<String, Box<dyn std::error::Erro
     }
 }
 
-pub fn extract_subtitle_urls(json: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+pub fn extract_subtitle_urls(json: &str) -> Result<HashMap<String, String>> {
     let re = regex::Regex::new("\"language\":\"(\\w+)\".*?\"url\":\"([^\"]*)\",\"format\":\"vtt\"")?;
     let urls = re.captures_iter(json)
         .map(|caps| (caps[1].to_string(), caps[2].to_string()))
         .collect();
     Ok(urls)
+}
+
+pub fn extract_total_duration(json: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let re = regex::Regex::new("\"duration\":(\\d+)")?;
+    if let Some(caps) = re.captures(json) {
+        let duration = caps[1].parse::<f64>()?;
+        Ok(duration.round() as u64)
+    } else {
+        Err("Duration not found".into())
+    }
 }
 
 pub fn sanitize_filename(filename: &str) -> String {
@@ -99,8 +112,8 @@ pub fn get_subtitle_filename(name: &str) -> String {
     format!("{}.vtt", sanitized_name)
 }
 
-pub async fn download_subtitle(url: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let response = reqwest::get(url).await?;
+pub async fn download_subtitle(url: &str, filename: &str, client: reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
     let content = response.text().await?;
 
     std::fs::write(filename, content)?;
@@ -108,15 +121,15 @@ pub async fn download_subtitle(url: &str, filename: &str) -> Result<(), Box<dyn 
     Ok(())
 }
 
-pub async fn download_playlist(url: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let response = reqwest::get(url).await?;
+pub async fn download_playlist(url: &str, client: reqwest::Client) -> Result<String, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
     let content = response.text().await?;
 
     Ok(content)
 }
 
-pub async fn download_manifest(url: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let response = reqwest::get(url).await?;
+pub async fn download_manifest(url: &str, client: reqwest::Client) -> Result<String, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?;
     let content = response.text().await?;
 
     Ok(content)
@@ -165,6 +178,9 @@ pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>
     args.push("2".into());
     args.push("-max_interleave_delta".into());
     args.push("100000".into());
+    args.push("-progress".into());
+    args.push("pipe:1".into());
+    args.push("-nostats".into());
     args.push("-avoid_negative_ts".into());
     args.push("make_zero".into());
     args.push("-fflags".into());
@@ -208,16 +224,40 @@ pub fn create_subtitle_arguments(subtitle_files: &HashMap<String, String>) -> Ve
     args
 }
 
-pub async fn run_command(args: Vec<String>, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Arguments: {:?}", args);
+pub async fn run_command(args: Vec<String>, name: &str, m: MultiProgress, total_duration: u64) {
+    //println!("Arguments: {:?}", args);
+
+    let pb = m.add(ProgressBar::new(total_duration));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>6}/{len:6} s, ETA {eta_precise} - {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    pb.set_message(name.to_string());
 
     let mut child = Command::new("ffmpeg")
         .args(args)
-       /*  .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped()) */
+        .stderr(Stdio::null())
         .spawn()
         .expect("Failed to start command");
+
+    let stdout = child.stdout.take().expect("Failed to capture stdout");
+    let mut reader = BufReader::new(stdout).lines();
+
+    let name = name.to_string();
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        if let Some(time_str) = line.strip_prefix("out_time_us=") {
+            if let Ok(time_us) = time_str.parse::<u64>() {
+                pb.set_position(time_us / 1_000_000);
+            }
+        }
+    }
+    
+    let _status = child.wait().await.expect("Failed to wait on ffmpeg");
+    pb.finish_with_message(format!("{} - Done!", name));
 
     /* let stderr = child.stderr.take().expect("No stderr");
     let mut reader = BufReader::new(stderr).lines();
@@ -236,6 +276,4 @@ pub async fn run_command(args: Vec<String>, name: &str) -> Result<(), Box<dyn st
     if !status.success() {
         return Err(format!("Command failed with status: {}", status).into());
     } */
-
-    Ok(())
 }

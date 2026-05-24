@@ -1,4 +1,6 @@
+use indicatif::MultiProgress;
 use serde_json::Value;
+use anyhow::Result;
 
 use crate::common;
 use crate::movie::download_with_idec;
@@ -68,8 +70,15 @@ pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn 
         }
     
         let episode = &episodes[episode_number - 1];
-        return download_episode(episode).await;
+        let episode = episode.clone();
+        download_episode(episode, MultiProgress::new(), reqwest::Client::new()).await;
+        return Ok(());
     }
+
+    let m = MultiProgress::new();
+    let client = reqwest::Client::new();
+
+    let mut threads = vec![];
 
     for episode_number in episode_numbers {
         if episode_number == 0 || episode_number > episodes.len() {
@@ -77,27 +86,38 @@ pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn 
             continue;
         }
     
+        let m0 = m.clone();
         let episode = &episodes[episode_number - 1];
-        if let Err(e) = download_episode(episode).await {
-            println!("Failed to download episode {}: {}", episode_number, e);
-        }
+        let episode = episode.clone();
+        threads.push(tokio::spawn(
+            download_episode(episode, m0, client.clone())
+        ));
+    }
+
+    for thread in threads {
+        let _ = thread.await;
     }
 
     Ok(())
 }
 
-async fn download_episode(episode: &Value) -> Result<(), Box<dyn std::error::Error>> {
+async fn download_episode(episode: Value, m: MultiProgress, client: reqwest::Client) {
     let episode_idec = episode["id"].as_str().unwrap_or("");
 
     let episode_title = episode["title"].as_str().unwrap_or("");
     let show_title = episode["showTitle"].as_str().unwrap_or("");
     let season_title = episode["season"]["title"].as_str().unwrap_or("");
 
+    let duration: f64 = episode["duration"].as_f64().unwrap_or(0.0);
+    let duration = duration.round() as u64;
+
     let name = common::format_episode(show_title, season_title, episode_title);
     
     println!("Downloading episode '{} - {}: {}'.", show_title, season_title, episode_title);
     
-    return download_with_idec(&episode_idec.to_string(), &name).await;
+    download_with_idec(&episode_idec.to_string(), &name, duration, m, client).await.unwrap_or_else(|e| {
+        println!("Failed to download episode '{} - {}: {}'. Error: {}", show_title, season_title, episode_title, e);
+    });
 }
 
 
