@@ -1,10 +1,11 @@
-use std::clone;
 use std::collections::HashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::process::Stdio;
 use anyhow::Result;
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+use crate::resume;
 
 pub async fn download_site(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let response = reqwest::get(url).await?;
@@ -165,7 +166,7 @@ pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: Vec<String
     args
 }
 
-pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>, mapping_arguments: Vec<String>, output_filename: &str) -> Vec<String> {
+pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>, mapping_arguments: Vec<String>, output_filename: &str, start_at_us: u64) -> Vec<String> {
     let mut args: Vec<String> = vec![];
 
     args.push("-headers".into());
@@ -193,6 +194,10 @@ pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>
     args.push("1".into());
     args.push("-reconnect_delay_max".into());
     args.push("2".into());
+    if start_at_us > 0 {
+        args.push("-ss".into());
+        args.push(format!("{}us", start_at_us));
+    }
     args.push("-i".into());
     args.push(format!("{}", stream_url));
     args.extend(subtitle_arguments);
@@ -224,7 +229,7 @@ pub fn create_subtitle_arguments(subtitle_files: &HashMap<String, String>) -> Ve
     args
 }
 
-pub async fn run_command(args: Vec<String>, name: &str, m: MultiProgress, total_duration: u64) {
+pub async fn run_command(args: Vec<String>, name: &str, id: &str, m: MultiProgress, total_duration: u64) -> Result<(), Box<dyn std::error::Error>> {
     //println!("Arguments: {:?}", args);
 
     let pb = m.add(ProgressBar::new(total_duration));
@@ -252,12 +257,27 @@ pub async fn run_command(args: Vec<String>, name: &str, m: MultiProgress, total_
         if let Some(time_str) = line.strip_prefix("out_time_us=") {
             if let Ok(time_us) = time_str.parse::<u64>() {
                 pb.set_position(time_us / 1_000_000);
+
+                if pb.eta() > std::time::Duration::from_hours(24*3) {
+                    resume::create_snapshot_file(&get_output_filename(id), time_us).await?;
+                    child.kill().await.expect("Failed to kill ffmpeg");
+                    pb.abandon_with_message(format!("{} - Detected stream timeout.", name));
+                    break;
+                }
             }
         }
     }
     
-    let _status = child.wait().await.expect("Failed to wait on ffmpeg");
-    pb.finish_with_message(format!("{} - Done!", name));
+    let status = child.wait().await.expect("Failed to wait on ffmpeg");
+    
+    if status.success() {
+        pb.finish_with_message(format!("{} - Done!", name));
+        Ok(())
+    } else {
+        pb.abandon_with_message(format!("{} - Failed!", name));
+        Err(format!("ffmpeg exited with status: {}", status).into())
+    }
+
 
     /* let stderr = child.stderr.take().expect("No stderr");
     let mut reader = BufReader::new(stderr).lines();

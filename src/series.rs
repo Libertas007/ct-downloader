@@ -2,7 +2,7 @@ use indicatif::MultiProgress;
 use serde_json::Value;
 use anyhow::Result;
 
-use crate::common;
+use crate::{common, resume};
 use crate::movie::download_with_idec;
 
 pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn std::error::Error>> {
@@ -115,7 +115,7 @@ async fn download_episode(episode: Value, m: MultiProgress, client: reqwest::Cli
     
     println!("Downloading episode '{} - {}: {}'.", show_title, season_title, episode_title);
     
-    download_with_idec(&episode_idec.to_string(), &name, duration, m, client).await.unwrap_or_else(|e| {
+    resume::download_loop(&episode_idec.to_string(), &name, duration, m, client).await.unwrap_or_else(|e| {
         println!("Failed to download episode '{} - {}: {}'. Error: {}", show_title, season_title, episode_title, e);
     });
 }

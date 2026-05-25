@@ -3,6 +3,7 @@ use std::env;
 mod common;
 mod movie;
 mod series;
+mod resume;
 
 fn main() {
     if !test_ffmpeg() {
