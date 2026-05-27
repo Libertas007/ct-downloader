@@ -1,52 +1,93 @@
 use std::{collections::HashMap, fs, io::Read};
 
-use indicatif::MultiProgress;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::{process::Command};
 
 use anyhow::Result;
 
-use crate::movie::download_with_idec;
+use crate::{common, movie::download_with_idec};
 
 pub async fn download_loop(idec: &String, name: &String, total_duration: u64, m: MultiProgress, client: reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
+    let mut retry_count = 0;
+    let max_retry_count = 10;
+
+    let pb = m.add(ProgressBar::new(total_duration));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(&"{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>6}/{len:6} s, ETA {eta_precise}: {NAME} - {msg}".replace("{NAME}", name))
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let playlist_url = common::get_playlist_url(&idec);
+    let playlist = common::download_playlist(&playlist_url, client.clone()).await?;
+
+    let mut subtitle_files = HashMap::<String, String>::new();
+
+    if let Ok(subtitle_urls) = common::extract_subtitle_urls(&playlist) {
+        pb.set_message(format!("Found {} subtitles.", subtitle_files.len()));
+
+        for (language, subtitle_url) in subtitle_urls {
+            let subtitle_filename = common::get_subtitle_filename(&format!("{} - {}", &name, language));
+            pb.set_message(format!("Downloading subtitles to '{}'.", subtitle_filename));
+            common::download_subtitle(&subtitle_url, &subtitle_filename, client.clone()).await?;
+
+            subtitle_files.insert(language, subtitle_filename);
+        }
+    } else {
+        pb.set_message("No subtitles found.");
+    }
+
+    let subtitle_arguments = common::create_subtitle_arguments(&subtitle_files);
+
+    let output_filename = crate::common::get_final_output_filename(name.as_str());
+
     loop {
-        match resume_download(idec, name, total_duration, m.clone(), client.clone()).await {
+        match resume_download(idec, name, total_duration, pb.clone(), client.clone()).await {
             Ok(_) => break,
             Err(e) => {
-                println!("Error during download: {}. Retrying...", e);
+                pb.set_message(format!("Error during download: {}. Retrying...", e));
+                retry_count += 1;
+                if retry_count >= max_retry_count {
+                    pb.abandon_with_message(format!("Failed to download after {} attempts: {}", max_retry_count, e));
+                    return Err(format!("Failed to download after {} attempts: {}", max_retry_count, e).into());
+                }
             }
         }
     }
 
-    let output_filename = crate::common::get_output_filename(name.as_str());
-
-    join_downloaded_files(name, &output_filename).await?;
+    join_downloaded_files(name, &output_filename, subtitle_arguments).await?;
 
     Ok(())
 }
 
-pub async fn resume_download(idec: &String, name: &String, total_duration: u64, m: MultiProgress, client: reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resume_download(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
     let join_file = format!("{}.join", name);
 
+    //println!("Checking for existing download progress for '{}'.", join_file);
+
     if let Ok(v) = fs::exists(&join_file) && v {   
-        let filenames = read_join_file(&join_file).await?;
+        let filenames = read_join_file(&name).await?;
         let durations = get_durations(filenames).await?;
         
         let max_duration = *durations.values().max().unwrap_or(&0);
+
+        //println!("Resuming download for '{}'. Already downloaded {} seconds out of {} seconds.", name, max_duration, total_duration);
         
-        download_with_idec(idec, name, total_duration, m, client, max_duration).await
+        download_with_idec(idec, name, total_duration, pb, client, max_duration).await
     } else {
-        download_with_idec(idec, name, total_duration, m, client, 0).await
+        download_with_idec(idec, name, total_duration, pb, client, 0).await
     }
 }
 
-pub async fn join_downloaded_files(name: &String, output_filename: &String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn join_downloaded_files(name: &String, output_filename: &String, subtitle_arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let join_file = format!("{}.join", name);
-    join_files(&name, output_filename).await?;
+    join_files(&name, output_filename, subtitle_arguments).await?;
     
-    let filenames = read_join_file(&join_file).await?;
+    let filenames = read_join_file(&name).await?;
 
     for filename in filenames {
-        std::fs::remove_file(&filename)?;
+        //std::fs::remove_file(&filename)?;
         std::fs::remove_file(format!("{}.snapshot", &filename))?;
     }
 
@@ -54,19 +95,36 @@ pub async fn join_downloaded_files(name: &String, output_filename: &String) -> R
     Ok(())
 }
 
+pub async fn read_snapshot_file(filename: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    //println!("Reading snapshot file for '{}'.", filename);
+
+    let snapshot_filename = format!("{}.snapshot", filename);
+
+    if !fs::exists(&snapshot_filename)? {
+        //println!("No snapshot file found for '{}'. Starting from the beginning.", filename);
+        return Ok(0);
+    }
+
+    let mut file = std::fs::File::open(snapshot_filename)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    let elapsed_time_us = content.trim().parse::<u64>()?;
+    Ok(elapsed_time_us)
+}
+
 pub async fn get_durations(filenames: Vec<String>) -> Result<HashMap<String, u64>, Box<dyn std::error::Error>> {
     let mut duration_map = HashMap::new();
 
     for filename in filenames {
-        let duration = get_file_duration(&filename).await?;
+        let duration = read_snapshot_file(&filename).await?;
         duration_map.insert(filename, duration);
     }
 
     Ok(duration_map)
 }
 
-pub async fn read_join_file(join_file: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut file = std::fs::File::open(format!("{}.join", join_file))?;
+pub async fn read_join_file(name: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut file = std::fs::File::open(format!("{}.join", name))?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
@@ -78,7 +136,7 @@ pub async fn read_join_file(join_file: &str) -> Result<Vec<String>, Box<dyn std:
     Ok(filenames)
 }
 
-pub async fn get_file_duration(filename: &str) -> Result<u64, Box<dyn std::error::Error>> {
+/* pub async fn get_file_duration(filename: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let output = Command::new("ffprobe")
     .args(&[
         "-v", "error",
@@ -91,9 +149,9 @@ pub async fn get_file_duration(filename: &str) -> Result<u64, Box<dyn std::error
 
     let duration = String::from_utf8_lossy(&output.stdout).trim().to_string().parse::<f64>()?;
     Ok(duration.round() as u64)
-}
+} */
 
-pub async fn join_files(join_file: &str, output_filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn join_files(name: &str, output_filename: &str, subtitle_arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let mut concat_cmd = Command::new("ffmpeg");
 
     concat_cmd.args(&[
@@ -101,8 +159,12 @@ pub async fn join_files(join_file: &str, output_filename: &str) -> Result<(), Bo
         "-hide_banner",
         "-f", "concat",
         "-safe", "0",
-        "-i", format!("{}.join", join_file).as_str(),
-        "-c", "copy",
+        "-i", format!("{}.join", name).as_str(),
+        ]);
+    concat_cmd.args(subtitle_arguments);
+    concat_cmd.args(&[
+        "-c:v", "copy",
+        "-c:a", "copy",
         output_filename,
     ]);
     concat_cmd.spawn().expect("Failed to join videos.");

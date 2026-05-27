@@ -103,7 +103,12 @@ pub fn format_episode(show_title: &str, season_title: &str, episode_title: &str)
     format!("{} - {} - {}", sanitized_show_title, sanitized_season_title, sanitized_episode_title)
 }
 
-pub fn get_output_filename(name: &str) -> String {
+pub fn get_part_output_filename(name: &str) -> String {
+    let sanitized_name = sanitize_filename(name);
+    format!("{}.mkv", sanitized_name)
+}
+
+pub fn get_final_output_filename(name: &str) -> String {
     let sanitized_name = sanitize_filename(name);
     format!("{}.mp4", sanitized_name)
 }
@@ -166,7 +171,7 @@ pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: Vec<String
     args
 }
 
-pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>, mapping_arguments: Vec<String>, output_filename: &str, start_at_us: u64) -> Vec<String> {
+pub fn create_ffmpeg_arguments(stream_url: &str, mapping_arguments: Vec<String>, output_filename: &str, start_at_us: u64) -> Vec<String> {
     let mut args: Vec<String> = vec![];
 
     args.push("-headers".into());
@@ -175,6 +180,7 @@ pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>
     args.push("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into());
     args.push("-y".into());
     args.push("-hide_banner".into());
+    args.push("-report".into());
     args.push("-readrate".into());
     args.push("2".into());
     args.push("-max_interleave_delta".into());
@@ -200,7 +206,7 @@ pub fn create_ffmpeg_arguments(stream_url: &str, subtitle_arguments: Vec<String>
     }
     args.push("-i".into());
     args.push(format!("{}", stream_url));
-    args.extend(subtitle_arguments);
+    //args.extend(subtitle_arguments);
     args.extend(mapping_arguments);
     args.push(format!("{}", output_filename));
 
@@ -229,17 +235,10 @@ pub fn create_subtitle_arguments(subtitle_files: &HashMap<String, String>) -> Ve
     args
 }
 
-pub async fn run_command(args: Vec<String>, name: &str, id: &str, m: MultiProgress, total_duration: u64) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_command(args: Vec<String>, name: &str, id: &str, pb: ProgressBar, start_at_us: u64) -> Result<(), Box<dyn std::error::Error>> {
     //println!("Arguments: {:?}", args);
 
-    let pb = m.add(ProgressBar::new(total_duration));
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>6}/{len:6} s, ETA {eta_precise} - {msg}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-    pb.set_message(name.to_string());
+    pb.set_message("Downloading...");
 
     let mut child = Command::new("ffmpeg")
         .args(args)
@@ -251,17 +250,19 @@ pub async fn run_command(args: Vec<String>, name: &str, id: &str, m: MultiProgre
     let stdout = child.stdout.take().expect("Failed to capture stdout");
     let mut reader = BufReader::new(stdout).lines();
 
-    let name = name.to_string();
+    let mut elapsed_us = 0;
 
     while let Ok(Some(line)) = reader.next_line().await {
         if let Some(time_str) = line.strip_prefix("out_time_us=") {
             if let Ok(time_us) = time_str.parse::<u64>() {
-                pb.set_position(time_us / 1_000_000);
+                pb.set_position((time_us + start_at_us) / 1_000_000);
+
+                elapsed_us = time_us;
 
                 if pb.eta() > std::time::Duration::from_hours(24*3) {
-                    resume::create_snapshot_file(&get_output_filename(id), time_us).await?;
+                    resume::create_snapshot_file(&get_part_output_filename(id), time_us).await?;
                     child.kill().await.expect("Failed to kill ffmpeg");
-                    pb.abandon_with_message(format!("{} - Detected stream timeout.", name));
+                    pb.set_message("Detected stream timeout.");
                     break;
                 }
             }
@@ -271,10 +272,11 @@ pub async fn run_command(args: Vec<String>, name: &str, id: &str, m: MultiProgre
     let status = child.wait().await.expect("Failed to wait on ffmpeg");
     
     if status.success() {
-        pb.finish_with_message(format!("{} - Done!", name));
+        pb.finish_with_message("Download completed.");
         Ok(())
     } else {
-        pb.abandon_with_message(format!("{} - Failed!", name));
+        pb.set_message("Download failed.");
+        resume::create_snapshot_file(&get_part_output_filename(id), elapsed_us).await?;
         Err(format!("ffmpeg exited with status: {}", status).into())
     }
 

@@ -3,7 +3,6 @@ use serde_json::Value;
 use anyhow::Result;
 
 use crate::{common, resume};
-use crate::movie::download_with_idec;
 
 pub async fn download_series(url: &String, json: &String) -> Result<(), Box<dyn std::error::Error>> {
     let data = serde_json::from_str::<serde_json::Value>(json)?;
