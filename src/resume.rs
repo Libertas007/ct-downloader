@@ -1,11 +1,11 @@
-use std::{collections::HashMap, fs, io::Read};
+use std::{collections::HashMap, fs::{self, File, read_to_string}, io::{Read, Write}, path::Path};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::{process::Command};
 
 use anyhow::Result;
 
-use crate::{common, movie::download_with_idec};
+use crate::{ALLOW_PARTIAL_DOWNLOADS, common, movie::download_with_idec};
 
 pub async fn download_loop(idec: &String, name: &String, total_duration: u64, m: MultiProgress, client: reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
     let mut retry_count = 0;
@@ -43,7 +43,7 @@ pub async fn download_loop(idec: &String, name: &String, total_duration: u64, m:
     let output_filename = crate::common::get_final_output_filename(name.as_str());
 
     loop {
-        match resume_download(idec, name, total_duration, pb.clone(), client.clone()).await {
+        match resume_download(idec, name, total_duration, pb.clone(), client.clone(), retry_count).await {
             Ok(_) => break,
             Err(e) => {
                 pb.set_message(format!("Error during download: {}. Retrying...", e));
@@ -56,27 +56,29 @@ pub async fn download_loop(idec: &String, name: &String, total_duration: u64, m:
         }
     }
 
-    join_downloaded_files(name, &output_filename, subtitle_arguments).await?;
+    if ALLOW_PARTIAL_DOWNLOADS {
+        join_downloaded_files(name, &output_filename, subtitle_arguments).await?;
+    }
 
     Ok(())
 }
 
-pub async fn resume_download(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resume_download(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, attempt: u32) -> Result<(), Box<dyn std::error::Error>> {
     let join_file = format!("{}.join", name);
 
     //println!("Checking for existing download progress for '{}'.", join_file);
 
-    if let Ok(v) = fs::exists(&join_file) && v {   
-        let filenames = read_join_file(&name).await?;
+    if let Ok(v) = fs::exists(&join_file) && v && ALLOW_PARTIAL_DOWNLOADS {   
+        let filenames = sanitize_and_read_join_file(&name)?;
         let durations = get_durations(filenames).await?;
         
         let max_duration = *durations.values().max().unwrap_or(&0);
 
         //println!("Resuming download for '{}'. Already downloaded {} seconds out of {} seconds.", name, max_duration, total_duration);
         
-        download_with_idec(idec, name, total_duration, pb, client, max_duration).await
+        download_with_idec(idec, name, total_duration, pb, client, max_duration, attempt).await
     } else {
-        download_with_idec(idec, name, total_duration, pb, client, 0).await
+        download_with_idec(idec, name, total_duration, pb, client, 0, attempt).await
     }
 }
 
@@ -84,7 +86,7 @@ pub async fn join_downloaded_files(name: &String, output_filename: &String, subt
     let join_file = format!("{}.join", name);
     join_files(&name, output_filename, subtitle_arguments).await?;
     
-    let filenames = read_join_file(&name).await?;
+    let filenames = sanitize_and_read_join_file(&name)?;
 
     for filename in filenames {
         //std::fs::remove_file(&filename)?;
@@ -123,12 +125,42 @@ pub async fn get_durations(filenames: Vec<String>) -> Result<HashMap<String, u64
     Ok(duration_map)
 }
 
-pub async fn read_join_file(name: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+/* pub async fn read_join_file(name: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut file = std::fs::File::open(format!("{}.join", name))?;
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
     let filenames = content.lines()
+        .filter_map(|line| line.strip_prefix("file '").and_then(|s| s.strip_suffix("'")))
+        .map(|s| s.to_string())
+        .collect();
+
+    Ok(filenames)
+} */
+
+pub fn sanitize_and_read_join_file(name: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let content = read_to_string(format!("{}.join", name)).expect("Could not read original file");
+    let mut clean_lines = Vec::new();
+
+    for line in content.lines() {
+        // Look for lines structured like: file 'part1.mkv'
+        if line.starts_with("file ") {
+            // Strip out the "file " prefix and any surrounding single quotes
+            let path_str = line.replace("file ", "").replace('\'', "").trim().to_string();
+            
+            if Path::new(&path_str).exists() {
+                clean_lines.push(line.to_string());
+            }
+        } else {
+            // Keep comments or empty spacing lines intact
+            clean_lines.push(line.to_string());
+        }
+    }
+
+    let mut clean_file = File::create(format!("{}.join", name)).expect("Failed to create sanitized file");
+    clean_file.write_all(clean_lines.join("\n").as_bytes()).expect("Write failed");
+
+    let filenames = clean_lines.iter()
         .filter_map(|line| line.strip_prefix("file '").and_then(|s| s.strip_suffix("'")))
         .map(|s| s.to_string())
         .collect();

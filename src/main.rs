@@ -5,6 +5,8 @@ mod movie;
 mod series;
 mod resume;
 
+const ALLOW_PARTIAL_DOWNLOADS: bool = false;
+
 fn main() {
     if !test_ffmpeg() {
         eprintln!("ffmpeg is not installed or not found in PATH. Please install ffmpeg to use this program.");
@@ -12,6 +14,15 @@ fn main() {
     }
 
     let args: Vec<String> = env::args().collect();
+
+    if args.len() == 3 && args[1] == "join" {
+        match tokio::runtime::Runtime::new().unwrap().block_on(resume::join_downloaded_files(&args[2], &format!("{}.mkv", &args[2]), Vec::new())) {
+            Ok(_) => println!("Program finished!"),
+            Err(e) => eprintln!("Error: {}", e),
+        }
+        return;
+    }
+
     if args.len() < 2 {
         eprintln!("Usage: {} <URL>", args[0]);
         std::process::exit(1);

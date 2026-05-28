@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::resume;
+use crate::{ALLOW_PARTIAL_DOWNLOADS, resume};
 
 pub async fn download_site(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let response = reqwest::get(url).await?;
@@ -180,7 +180,6 @@ pub fn create_ffmpeg_arguments(stream_url: &str, mapping_arguments: Vec<String>,
     args.push("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".into());
     args.push("-y".into());
     args.push("-hide_banner".into());
-    args.push("-report".into());
     args.push("-readrate".into());
     args.push("2".into());
     args.push("-max_interleave_delta".into());
@@ -200,7 +199,7 @@ pub fn create_ffmpeg_arguments(stream_url: &str, mapping_arguments: Vec<String>,
     args.push("1".into());
     args.push("-reconnect_delay_max".into());
     args.push("2".into());
-    if start_at_us > 0 {
+    if start_at_us > 0 && ALLOW_PARTIAL_DOWNLOADS {
         args.push("-ss".into());
         args.push(format!("{}us", start_at_us));
     }
@@ -235,10 +234,10 @@ pub fn create_subtitle_arguments(subtitle_files: &HashMap<String, String>) -> Ve
     args
 }
 
-pub async fn run_command(args: Vec<String>, name: &str, id: &str, pb: ProgressBar, start_at_us: u64) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_command(args: Vec<String>, name: &str, id: &str, pb: ProgressBar, start_at_us: u64, attempt: u32) -> Result<(), Box<dyn std::error::Error>> {
     //println!("Arguments: {:?}", args);
 
-    pb.set_message("Downloading...");
+    pb.set_message(format!("Downloading... (attempt {})", attempt));
 
     let mut child = Command::new("ffmpeg")
         .args(args)
@@ -260,7 +259,9 @@ pub async fn run_command(args: Vec<String>, name: &str, id: &str, pb: ProgressBa
                 elapsed_us = time_us;
 
                 if pb.eta() > std::time::Duration::from_hours(24*3) {
-                    resume::create_snapshot_file(&get_part_output_filename(id), time_us).await?;
+                    if ALLOW_PARTIAL_DOWNLOADS {
+                        resume::create_snapshot_file(&get_part_output_filename(id), time_us).await?;
+                    }
                     child.kill().await.expect("Failed to kill ffmpeg");
                     pb.set_message("Detected stream timeout.");
                     break;
@@ -276,7 +277,9 @@ pub async fn run_command(args: Vec<String>, name: &str, id: &str, pb: ProgressBa
         Ok(())
     } else {
         pb.set_message("Download failed.");
-        resume::create_snapshot_file(&get_part_output_filename(id), elapsed_us).await?;
+        if ALLOW_PARTIAL_DOWNLOADS {
+            resume::create_snapshot_file(&get_part_output_filename(id), elapsed_us).await?;
+        }
         Err(format!("ffmpeg exited with status: {}", status).into())
     }
 

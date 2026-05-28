@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use indicatif::{MultiProgress, ProgressBar};
 
-use crate::{common, resume};
+use crate::{ALLOW_PARTIAL_DOWNLOADS, common, resume};
 
 pub async fn download_movie(url: &String, json: &String) -> Result<(), Box<dyn std::error::Error>> {
     let title = common::extract_title(json)?;
@@ -17,7 +17,7 @@ pub async fn download_movie(url: &String, json: &String) -> Result<(), Box<dyn s
     resume::download_loop(&idec, &name, total_duration, MultiProgress::new(), reqwest::Client::new()).await
 }
 
-pub async fn download_with_idec(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, start_at_us: u64) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn download_with_idec(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, start_at_us: u64, attempt: u32) -> Result<(), Box<dyn std::error::Error>> {
     let playlist_url = common::get_playlist_url(&idec);
     let playlist = common::download_playlist(&playlist_url, client.clone()).await?;
 
@@ -42,9 +42,14 @@ pub async fn download_with_idec(idec: &String, name: &String, total_duration: u6
     let id = uuid::Uuid::new_v4().to_string();
 
     let manifest = common::download_manifest(&stream_url, client.clone()).await?;
-    let output_filename = common::get_part_output_filename(&id);
+    let output_filename = match ALLOW_PARTIAL_DOWNLOADS {
+        true => common::get_part_output_filename(&id),
+        false => common::get_final_output_filename(name),
+    };
 
-    resume::append_to_join_file(&output_filename, &name).await?;
+    if ALLOW_PARTIAL_DOWNLOADS {
+        resume::append_to_join_file(&output_filename, &name).await?;
+    }
 
     let video_qualities = common::extract_video_qualities(&manifest);
 
@@ -58,5 +63,5 @@ pub async fn download_with_idec(idec: &String, name: &String, total_duration: u6
 
     let args = common::create_ffmpeg_arguments(&stream_url, mapping_arguments, &output_filename, start_at_us);
 
-    common::run_command(args, &name, &id, pb, start_at_us).await
+    common::run_command(args, &name, &id, pb, start_at_us, attempt).await
 }
