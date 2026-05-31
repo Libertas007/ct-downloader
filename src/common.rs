@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::process::Stdio;
 use anyhow::Result;
@@ -148,14 +148,14 @@ pub fn extract_video_qualities(manifest: &str) -> Vec<i32> {
         .collect()
 }
 
-pub fn extract_audio_languages(manifest: &str) -> Vec<String> {
+pub fn extract_audio_languages(manifest: &str) -> HashSet<String> {
     let re = regex::Regex::new("<AdaptationSet .* lang=\"(\\w+)\" >").unwrap();
     re.captures_iter(manifest)
         .map(|caps| caps[1].to_string())
         .collect()
 }
 
-pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: Vec<String>) -> Vec<String> {
+pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: HashSet<String>) -> Vec<String> {
     let mut args: Vec<String> = vec![];
 
     let video_quality_count = video_qualities.len();
@@ -171,7 +171,7 @@ pub fn create_mapping_arguments(video_qualities: Vec<i32>, languages: Vec<String
     args
 }
 
-pub fn create_ffmpeg_arguments(stream_url: &str, mapping_arguments: Vec<String>, output_filename: &str, start_at_us: u64) -> Vec<String> {
+pub fn create_ffmpeg_arguments(stream_url: &str, mapping_arguments: Vec<String>, subtitle_arguments: Vec<String>, output_filename: &str, start_at_us: u64) -> Vec<String> {
     let mut args: Vec<String> = vec![];
 
     args.push("-headers".into());
@@ -205,7 +205,7 @@ pub fn create_ffmpeg_arguments(stream_url: &str, mapping_arguments: Vec<String>,
     }
     args.push("-i".into());
     args.push(format!("{}", stream_url));
-    //args.extend(subtitle_arguments);
+    args.extend(subtitle_arguments);
     args.extend(mapping_arguments);
     args.push(format!("{}", output_filename));
 

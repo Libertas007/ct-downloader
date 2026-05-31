@@ -17,7 +17,7 @@ pub async fn download_movie(url: &String, json: &String) -> Result<(), Box<dyn s
     resume::download_loop(&idec, &name, total_duration, MultiProgress::new(), reqwest::Client::new()).await
 }
 
-pub async fn download_with_idec(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, start_at_us: u64, attempt: u32) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn download_with_idec(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, start_at_us: u64, attempt: u32, subtitle_arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let playlist_url = common::get_playlist_url(&idec);
     let playlist = common::download_playlist(&playlist_url, client.clone()).await?;
 
@@ -56,12 +56,12 @@ pub async fn download_with_idec(idec: &String, name: &String, total_duration: u6
     let languages = common::extract_audio_languages(&manifest);
 
     pb.set_message(format!("[{}] Available video qualities: {}", name, video_qualities.iter().map(|e| format!("{}p", e)).collect::<Vec<String>>().join(", ")));
-    pb.set_message(format!("[{}] Available audio languages: {}", name, languages.join(", ")));
+    pb.set_message(format!("[{}] Available audio languages: {}", name, languages.iter().cloned().collect::<Vec<String>>().join(", ")));
 
     let mapping_arguments = common::create_mapping_arguments(video_qualities, languages);
     // let subtitle_arguments = common::create_subtitle_arguments(&subtitle_files);
 
-    let args = common::create_ffmpeg_arguments(&stream_url, mapping_arguments, &output_filename, start_at_us);
+    let args = common::create_ffmpeg_arguments(&stream_url, mapping_arguments, subtitle_arguments, &output_filename, start_at_us);
 
     common::run_command(args, &name, &id, pb, start_at_us, attempt).await
 }

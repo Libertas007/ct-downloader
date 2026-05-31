@@ -43,7 +43,7 @@ pub async fn download_loop(idec: &String, name: &String, total_duration: u64, m:
     let output_filename = crate::common::get_final_output_filename(name.as_str());
 
     loop {
-        match resume_download(idec, name, total_duration, pb.clone(), client.clone(), retry_count).await {
+        match resume_download(idec, name, total_duration, pb.clone(), client.clone(), retry_count, subtitle_arguments.clone()).await {
             Ok(_) => break,
             Err(e) => {
                 pb.set_message(format!("Error during download: {}. Retrying...", e));
@@ -63,7 +63,7 @@ pub async fn download_loop(idec: &String, name: &String, total_duration: u64, m:
     Ok(())
 }
 
-pub async fn resume_download(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, attempt: u32) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn resume_download(idec: &String, name: &String, total_duration: u64, pb: ProgressBar, client: reqwest::Client, attempt: u32, subtitle_arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let join_file = format!("{}.join", name);
 
     //println!("Checking for existing download progress for '{}'.", join_file);
@@ -76,9 +76,9 @@ pub async fn resume_download(idec: &String, name: &String, total_duration: u64, 
 
         //println!("Resuming download for '{}'. Already downloaded {} seconds out of {} seconds.", name, max_duration, total_duration);
         
-        download_with_idec(idec, name, total_duration, pb, client, max_duration, attempt).await
+        download_with_idec(idec, name, total_duration, pb, client, max_duration, attempt, subtitle_arguments).await
     } else {
-        download_with_idec(idec, name, total_duration, pb, client, 0, attempt).await
+        download_with_idec(idec, name, total_duration, pb, client, 0, attempt, subtitle_arguments).await
     }
 }
 
